@@ -2,8 +2,11 @@
   <img width="600" height="200" alt="OpenLIB Banner" src="https://github.com/user-attachments/assets/66d8cb4d-785e-4fc2-bda8-655648606167" />
 </p>
 
-# OpenLIB
-Library Management System
+<h1 align="center">
+  <em>
+    Library Management System
+  </em>
+</h1>
 
 **OpenLIB** is a desktop library management application developed as part of an academic project. Built with Python, Tkinter, and SQLite, it aims to simplify library operations through an intuitive graphical interface.
 
