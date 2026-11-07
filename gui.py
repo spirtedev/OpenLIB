@@ -390,67 +390,69 @@ class UsersTab(BaseTab):
 
 
 class LoansTab(BaseTab):
-    """Staff: all loans, with New loan / Return. Member: own loans, read only."""
+    """Staff: all loans, with New loan / Return (supports ID-based filtering). 
+       Member: own active loans or history, read only."""
 
     def columns(self):
-        return [("id", "ID", 50, "center"), ("username", "Member", 110, "w"),
-                ("title", "Book", 230, "w"), ("loan_date", "Loaned", 90, "center"),
-                ("due_date", "Due", 90, "center"), ("returned_at", "Returned", 90, "center"),
-                ("state", "Status", 80, "center")]
+        return [("id", "ID", 50, "center"), ("user_id", "User ID", 70, "center"), 
+                ("book_id", "Book ID", 70, "center"), ("due_date", "Due", 100, "center"), 
+                ("returned_at", "Returned", 100, "center"), ("state", "Status", 90, "center")]
 
     def build_filters(self, bar):
         if self.app.is_staff:
-            self.member_var = self.add_filter_entry(bar, "Member:", 16)
-        self.book_var = self.add_filter_entry(bar, "Book:", 22)
-        self.active_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(bar, text="Active loans only", variable=self.active_var).pack(
-            side="left", padx=10)
-        self.filter_vars.append(self.active_var)
+            self.user_id_var = self.add_filter_entry(bar, "User ID:", 10)
+            self.book_id_var = self.add_filter_entry(bar, "Book ID:", 10)
+        else:
+            self.active_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(bar, text="Active loans only", variable=self.active_var).pack(
+                side="left", padx=10)
+            self.filter_vars.append(self.active_var)
 
     def fetch(self):
-        username = self.member_var.get().strip() if self.app.is_staff else self.user["username"]
-        loans = database.search_loans(username=username or None,
-                                      title=self.book_var.get().strip() or None,
-                                      active_loans_only=self.active_var.get())
-        if not self.app.is_staff:  # search is a LIKE: keep only this member's own loans
-            loans = [l for l in loans if l["username"].lower() == self.user["username"].lower()]
-        return loans
+        if self.app.is_staff:
+            u_id = self.user_id_var.get().strip()
+            b_id = self.book_id_var.get().strip()
+            
+            user_id_val = int(u_id) if u_id.isdigit() else None
+            book_id_val = int(b_id) if b_id.isdigit() else None
+            
+            return database.lister_emprunts_admin(user_id=user_id_val, book_id=book_id_val)
+        else:
+            user_id = self.user["id"]
+            if self.active_var.get():
+                return database.lister_emprunts_actifs_membre(user_id)
+            else:
+                return database.historique_emprunts_membre(user_id)
 
     def display(self, loan):
-        state = loan_state(loan)
-        values = (loan["id"], loan["username"], loan["title"], loan["loan_date"],
-                  loan["due_date"], loan["returned_at"] or "", state)
+        loan_id, user_id, book_id, due_date, returned_at = loan
+        
+        loan_dict = {"due_date": due_date, "returned_at": returned_at}
+        state = loan_state(loan_dict)
+        
+        values = (loan_id, user_id, book_id, due_date, returned_at or "", state)
         return values, ("alert",) if state == "Overdue" else ()
 
-   def buttons(self):
-        """Boutons affichés en bas de l'onglet Loans selon le rôle."""
+    def buttons(self):
         if self.app.is_staff:
-            # Boutons pour Admin et Bibliothécaire
             return [
                 ("New loan", self.new_loan), 
                 ("Return book", self.return_book),
                 ("Filtrer (Admin)", self.filtrer_admin_action)
             ]
         else:
-            # Boutons pour les Membres (Actifs vs Historique)
             return [
                 ("Voir emprunts actifs", self.voir_actifs),
                 ("Voir historique complet", self.voir_historique)
             ]
 
     def filtrer_admin_action(self):
-        """Action du bouton Filtrer pour l'Admin/Bibliothécaire."""
-        # La liste se met déjà à jour automatiquement grâce aux champs de saisie,
-        # mais ce bouton force un rafraîchissement explicite avec message de confirmation.
         self.refresh()
         messagebox.showinfo("OpenLIB", "Liste des emprunts filtrée avec succès.")
 
     def voir_actifs(self):
-        """Affiche les emprunts en cours du membre connecté."""
         user_id = self.user["id"]
         resultats = database.lister_emprunts_actifs_membre(user_id)
-        
-        # Affichage simple dans une boîte de message ou rechargement direct du tableau
         if not resultats:
             messagebox.showinfo("Mes emprunts actifs", "Vous n'avez aucun livre emprunté actuellement.")
         else:
@@ -458,49 +460,68 @@ class LoansTab(BaseTab):
             messagebox.showinfo("Mes emprunts actifs", texte)
 
     def voir_historique(self):
-        """Affiche l'historique complet des emprunts du membre connecté."""
         user_id = self.user["id"]
         resultats = database.historique_emprunts_membre(user_id)
-        
         if not resultats:
             messagebox.showinfo("Historique", "Vous n'avez aucun historique d'emprunt.")
         else:
             texte = "\n".join([f"ID: {r[0]} | Livre: {r[1]} | Échéance: {r[2]} | Rendu: {r[3] if r[3] else 'Non rendu'}" for r in resultats])
             messagebox.showinfo("Historique complet", texte)
+
     def new_loan(self):
         members = rows_or_empty(database.search_users(self.user["role"], role="Member"))
         books = [b for b in database.search_books() if b["quantity"] > 0]
+        
         if not members or not books:
-            messagebox.showinfo("OpenLIB", "You need at least one member and one available book.")
+            messagebox.showinfo("OpenLIB", "Il faut au moins un membre et un livre disponible.")
             return
+            
         member_choices = {f"{m['id']} - {m['username']}": m["id"] for m in members}
         book_choices = {f"{b['id']} - {b['title']}": b["id"] for b in books}
+        
         data = FormDialog(self, "New loan", [
-            {"key": "member", "label": "Member", "kind": "choice",
-             "choices": list(member_choices)},
+            {"key": "member", "label": "Member", "kind": "choice", "choices": list(member_choices)},
             {"key": "book", "label": "Book", "kind": "choice", "choices": list(book_choices)},
-            {"key": "days", "label": "Duration (days)", "kind": "spin", "from_": 1,
+            {"key": "days", "label": "Duration (days)", "kind": "spin", "from_": 1, 
              "to": MAX_LOAN_DAYS, "value": DEFAULT_LOAN_DAYS},
         ], ok_text="Lend").result
+        
         if not data:
             return
         if not data["member"] or not data["book"]:
-            messagebox.showwarning("OpenLIB", "Choose a member and a book.")
+            messagebox.showwarning("OpenLIB", "Veuillez choisir un membre et un livre.")
             return
-        self.apply(database.loan_book(member_choices[data["member"]],
-                                      book_choices[data["book"]], data["days"]))
+            
+        user_id = member_choices[data["member"]]
+        book_id = book_choices[data["book"]]
+        duree_jours = int(data["days"])
+        
+        resultat = database.emprunter_livre(user_id, book_id, duree_jours)
+        
+        if resultat is not None:
+            messagebox.showinfo("Succès", "Emprunt enregistré avec succès !")
+            self.refresh()
+        else:
+            messagebox.showerror("Erreur", "Impossible d'effectuer l'emprunt (livre épuisé ou erreur).")
 
     def return_book(self):
         loan = self.selected()
         if loan is None:
             return
-        if loan["returned_at"]:
+            
+        loan_id, user_id, book_id, due_date, returned_at = loan
+        
+        if returned_at:
             messagebox.showinfo("OpenLIB", MESSAGES[Status.BOOK_ALREADY_RETURNED])
             return
-        late = days_late(loan)
-        if self.apply(database.return_book(loan["id"])) and late:
-            messagebox.showwarning("Late return", f"Returned {late} day(s) after the due date.")
-
+            
+        resultat_book_id = database.retourner_livre(loan_id)
+        
+        if resultat_book_id is not None:
+            messagebox.showinfo("Succès", "Livre retourné avec succès !")
+            self.refresh()
+        else:
+            messagebox.showerror("Erreur", "Impossible d'enregistrer le retour de ce livre.")
 
 # ------------------------------------------------------------------ dashboard
 class MainFrame(ttk.Frame):
