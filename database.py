@@ -576,3 +576,72 @@ def return_all_books(user_id):
     except sqlite3.Error:
         return Status.DATABASE_ERROR
     return Status.SUCCESS
+# ===================================================================
+#  FONCTIONS DE LISTES 
+# ===================================================================
+
+def lister_emprunts_admin(user_id=None, book_id=None):
+    """
+    Liste les emprunts pour les administrateurs et bibliothécaires.
+    Permet de filtrer par user_id, book_id, ou les deux.
+    """
+    try:
+        query = """
+            SELECT id, user_id, book_id, due_date, returned_at 
+            FROM loans
+            WHERE 1=1
+        """
+        params = []
+        
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        
+        if book_id is not None:
+            query += " AND book_id = ?"
+            params.append(book_id)
+        
+        query += " ORDER BY due_date DESC"
+        
+        cursor.execute(query, tuple(params))
+        return cursor.fetchall()
+        
+    except sqlite3.Error as error:
+        print("Erreur SQL :", error)
+        return []
+
+
+def lister_emprunts_actifs_membre(user_id):
+    """
+    Permet à un membre de voir ses emprunts en cours (non encore retournés).
+    """
+    try:
+        cursor.execute("""
+            SELECT id, book_id, due_date 
+            FROM loans
+            WHERE user_id = ? AND returned_at IS NULL
+            ORDER BY due_date ASC
+        """, (user_id,))
+        return cursor.fetchall()
+        
+    except sqlite3.Error as error:
+        print("Erreur SQL :", error)
+        return []
+
+
+def historique_emprunts_membre(user_id):
+    """
+    Permet à un membre de consulter l'historique complet de ses emprunts.
+    """
+    try:
+        cursor.execute("""
+            SELECT id, book_id, due_date, returned_at 
+            FROM loans
+            WHERE user_id = ?
+            ORDER BY due_date DESC
+        """, (user_id,))
+        return cursor.fetchall()
+        
+    except sqlite3.Error as error:
+        print("Erreur SQL :", error)
+        return []
