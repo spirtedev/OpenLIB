@@ -433,11 +433,51 @@ class LoansTab(BaseTab):
                   loan["due_date"], loan["returned_at"] or "", state)
         return values, ("alert",) if state == "Overdue" else ()
 
-    def buttons(self):
-        if not self.app.is_staff:
-            return []
-        return [("New loan", self.new_loan), ("Return book", self.return_book)]
+   def buttons(self):
+        """Boutons affichés en bas de l'onglet Loans selon le rôle."""
+        if self.app.is_staff:
+            # Boutons pour Admin et Bibliothécaire
+            return [
+                ("New loan", self.new_loan), 
+                ("Return book", self.return_book),
+                ("Filtrer (Admin)", self.filtrer_admin_action)
+            ]
+        else:
+            # Boutons pour les Membres (Actifs vs Historique)
+            return [
+                ("Voir emprunts actifs", self.voir_actifs),
+                ("Voir historique complet", self.voir_historique)
+            ]
 
+    def filtrer_admin_action(self):
+        """Action du bouton Filtrer pour l'Admin/Bibliothécaire."""
+        # La liste se met déjà à jour automatiquement grâce aux champs de saisie,
+        # mais ce bouton force un rafraîchissement explicite avec message de confirmation.
+        self.refresh()
+        messagebox.showinfo("OpenLIB", "Liste des emprunts filtrée avec succès.")
+
+    def voir_actifs(self):
+        """Affiche les emprunts en cours du membre connecté."""
+        user_id = self.user["id"]
+        resultats = database.lister_emprunts_actifs_membre(user_id)
+        
+        # Affichage simple dans une boîte de message ou rechargement direct du tableau
+        if not resultats:
+            messagebox.showinfo("Mes emprunts actifs", "Vous n'avez aucun livre emprunté actuellement.")
+        else:
+            texte = "\n".join([f"Emprunt ID: {r[0]} | Livre ID: {r[1]} | Date limite: {r[2]}" for r in resultats])
+            messagebox.showinfo("Mes emprunts actifs", texte)
+
+    def voir_historique(self):
+        """Affiche l'historique complet des emprunts du membre connecté."""
+        user_id = self.user["id"]
+        resultats = database.historique_emprunts_membre(user_id)
+        
+        if not resultats:
+            messagebox.showinfo("Historique", "Vous n'avez aucun historique d'emprunt.")
+        else:
+            texte = "\n".join([f"ID: {r[0]} | Livre: {r[1]} | Échéance: {r[2]} | Rendu: {r[3] if r[3] else 'Non rendu'}" for r in resultats])
+            messagebox.showinfo("Historique complet", texte)
     def new_loan(self):
         members = rows_or_empty(database.search_users(self.user["role"], role="Member"))
         books = [b for b in database.search_books() if b["quantity"] > 0]
