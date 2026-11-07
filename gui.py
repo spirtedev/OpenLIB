@@ -1,14 +1,3 @@
-"""OpenLIB - dashboard shown after login (Tkinter).
-
-MainFrame builds the tabs that match the role of the logged-in user:
-    Admin     -> Books, Users, Loans
-    Librarian -> Books, Members, Loans
-    Member    -> Books (read only), My loans (read only)
-
-The login / registration pages are in login_reg.py and the window is in main.py.
-This module never writes SQL: it only calls the functions of database.py and
-translates the returned Status codes into messages for the user.
-"""
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import date
