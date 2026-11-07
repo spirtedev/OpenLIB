@@ -1,31 +1,57 @@
-from tkinter import *
+import os
+import tkinter as tk
+import database
+from authentification import LoginPage, RegisterPage
 
+BG_COLOR = "#000091"
 
-# Create the window and give it the title "OpenLIB"
-window = Tk()
-window.title("OpenLIB")
+class OpenLIBApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("OpenLIB")
+        self.geometry("800x550")
+        self.configure(bg=BG_COLOR)
 
-# Add an icon to the app
-icon = PhotoImage(file="assets/openlibicon.png")
-window.iconphoto(True, icon)
+        # Set window icon if logo exists
+        if os.path.exists("openlibicon.png"):
+            try:
+                self.iconphoto(False, tk.PhotoImage(file="openlibicon.png"))
+            except Exception:
+                pass
 
-# Window's dimensions
-window.geometry("1200x750")
-window.minsize(950, 600)
+        # Create database tables if they do not exist yet
+        database.init()
 
-# Center the window
-screen_width = window.winfo_screenwidth()
-screen_height = window.winfo_screenheight()
+        # Holds current logged-in user data
+        self.current_user = None
 
-x = (screen_width - 1200) // 2
-y = (screen_height - 750) // 2
+        # Container for stacking screens
+        container = tk.Frame(self, bg=BG_COLOR)
+        container.pack(fill="both", expand=True)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
 
-window.geometry(f"1200x750+{x}+{y}")
+        # Register all application views
+        self.frames = {}
+        for PageClass in (LoginPage, RegisterPage):
+            page_name = PageClass.__name__
+            frame = PageClass(parent=container, controller=self)
+            self.frames[page_name] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
 
+        # Start on LoginPage
+        self.show_frame("LoginPage")
 
-def main():
-    window.mainloop()
+    def show_frame(self, page_name):
+        frame = self.frames[page_name]
+        frame.on_show()
+        frame.tkraise()
+
+    def logout(self):
+        self.current_user = None
+        self.show_frame("LoginPage")
 
 
 if __name__ == "__main__":
-    main()
+    app = OpenLIBApp()
+    app.mainloop()
