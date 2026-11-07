@@ -1,14 +1,27 @@
 import sqlite3
 from datetime import date, timedelta
+from pathlib import Path
 from status_codes import Status
 from helpers import *
 
 
-conn = sqlite3.connect("openlib.db", autocommit=True)
+# The database file always sits next to this file, whatever folder the app is started from
+DB_PATH = Path(__file__).parent / "openlib.db"
+
+conn = sqlite3.connect(DB_PATH, autocommit=True)
 conn.execute("PRAGMA foreign_keys = ON")
 conn.autocommit = False
 conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
+
+
+def close():
+    """Closes the database connection. Called when the application window closes."""
+    try:
+        cursor.close()
+        conn.close()
+    except sqlite3.Error:
+        pass
 
 
 # TABLES INITIALIZATION
@@ -22,7 +35,7 @@ def init():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (LENGTH(username) BETWEEN 3 AND 50),
             password_hash TEXT NOT NULL,
-            join_date DATE NOT NULL DEFAULT CURRENT_DATE,
+            join_date DATE NOT NULL DEFAULT (date('now', 'localtime')),
             role TEXT NOT NULL CHECK (role IN ('Admin', 'Librarian', 'Member')),
             available_loans INTEGER NOT NULL DEFAULT 3
             CHECK (available_loans BETWEEN 0 AND 3)
@@ -70,11 +83,43 @@ def init():
 
 # Add a new user to the users table
 def new_user(username, password_hash, role):
+    # Remove spaces around the username; an empty username is not allowed
+    if not isinstance(username, str) or username.strip() == "":
+        return Status.INVALID_USERNAME
+    username = username.strip()
+
     try:
         with conn:
             cursor.execute(
                 "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
                 (username, password_hash, role,)
+            )
+    except sqlite3.IntegrityError as error:
+        return get_users_error_type(str(error))
+    except sqlite3.Error:
+        return Status.DATABASE_ERROR
+    return Status.SUCCESS
+
+
+# Register a new account from the sign-up form. The role is chosen HERE, in the database
+# layer, and never by the person registering:
+#   - no Admin exists yet  -> the new account becomes the Admin (the very first user)
+#   - an Admin exists      -> the new account is a Member
+# The check and the insert happen in ONE SQL statement, so two people registering at the
+# same moment can never both become Admin.
+def register_user(username, password_hash):
+    if not isinstance(username, str) or username.strip() == "":
+        return Status.INVALID_USERNAME
+    username = username.strip()
+
+    try:
+        with conn:
+            cursor.execute(
+                """INSERT INTO users (username, password_hash, role)
+                   SELECT ?, ?,
+                          CASE WHEN EXISTS (SELECT 1 FROM users WHERE role = 'Admin')
+                               THEN 'Member' ELSE 'Admin' END""",
+                (username, password_hash),
             )
     except sqlite3.IntegrityError as error:
         return get_users_error_type(str(error))
@@ -96,12 +141,17 @@ def edit_user(id, username=None, password_hash=None, role=None):
 
     # Add the conditions and values depending on the available input arguments 
     if username is not None:
+        # Remove spaces around the username; an empty username is not allowed
+        if not isinstance(username, str) or username.strip() == "":
+            return Status.INVALID_USERNAME
         conditions.append("username = ?")
-        values.append(username)
+        values.append(username.strip())
     if password_hash is not None:
         conditions.append("password_hash = ?")
         values.append(password_hash)
-    if role is not None:
+    # A role "change" to the role the user already has is simply ignored
+    # (so an Admin keeping the Admin role does not get a FORBIDDEN error)
+    if role is not None and role != user_info["role"]:
         cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'Admin'")
         admin_count = cursor.fetchone()[0]
 
@@ -180,8 +230,8 @@ def search_users(active_user_role, id=None, username=None, role=None):
             conditions.append("id = ?")
             values.append(id)
         if username is not None:
-            conditions.append("username LIKE ?")
-            values.append(f"%{username}%")
+            conditions.append("username LIKE ? ESCAPE '\\'")
+            values.append(f"%{escape_like(username)}%")
         if role is not None:
             conditions.append("role = ?")
             values.append(role)
@@ -189,11 +239,58 @@ def search_users(active_user_role, id=None, username=None, role=None):
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY username"
-        
-        cursor.execute(query, values)
-        return cursor.fetchall()
+
+        try:
+            cursor.execute(query, values)
+            return cursor.fetchall()
+        except sqlite3.Error:
+            return Status.DATABASE_ERROR
     else:
         return Status.FORBIDDEN
+
+
+# Get one user by id, including how many loans he can still make (available_loans).
+# Returns a row (id, username, join_date, role, available_loans) or Status.USER_NOT_FOUND
+def get_user(id):
+    try:
+        cursor.execute(
+            "SELECT id, username, join_date, role, available_loans FROM users WHERE id = ?",
+            (id,),
+        )
+        user = cursor.fetchone()
+    except sqlite3.Error:
+        return Status.DATABASE_ERROR
+    if user is None:
+        return Status.USER_NOT_FOUND
+    return user
+
+
+# Same as get_user() but searches by username (used right after a successful login)
+def get_user_by_username(username):
+    try:
+        cursor.execute(
+            "SELECT id, username, join_date, role, available_loans FROM users WHERE username = ?",
+            (username,),
+        )
+        user = cursor.fetchone()
+    except sqlite3.Error:
+        return Status.DATABASE_ERROR
+    if user is None:
+        return Status.USER_NOT_FOUND
+    return user
+
+
+# Returns the stored password hash of a username, or None if the username does not exist.
+# The GUI checks the password itself in a background thread (hashing is slow), see helpers.py
+def get_password_hash(username):
+    try:
+        cursor.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
+        row = cursor.fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return row["password_hash"]
 
 
 def login_user(username, password):
@@ -216,10 +313,12 @@ def login_user(username, password):
 
 def new_book(title, author, genre, quantity):
     try:
-        # Make sure quantity is a number, not text
+        # Make sure quantity is a whole number (no None, True, 2.5, text or huge values)
         try:
-            quantity = int(quantity)
-        except ValueError:
+            quantity = to_whole_number(quantity, 0, MAX_BOOK_QUANTITY)
+        except (ValueError, TypeError, OverflowError):
+            return Status.INVALID_BOOK_QUANTITY
+        if quantity is None:
             return Status.INVALID_BOOK_QUANTITY
         with conn:
             cursor.execute(
@@ -261,12 +360,12 @@ def edit_book(id, title=None, author=None, genre=None, quantity=None):
         values.append(genre)
     if quantity is not None:
         try:
-            quantity = int(quantity)
-        except (ValueError, TypeError):
+            quantity = to_whole_number(quantity, 0, MAX_BOOK_QUANTITY)
+        except (ValueError, TypeError, OverflowError):
             return Status.INVALID_BOOK_QUANTITY
-        if quantity < 0:
+        if quantity is None:
             return Status.INVALID_BOOK_QUANTITY
-        
+
         conditions.append("quantity = ?")
         values.append(quantity)
 
@@ -325,11 +424,11 @@ def search_books(id=None, title=None, author=None, genre=None):
         conditions.append("id = ?")
         values.append(id)
     if title is not None:
-        conditions.append("title LIKE ?")
-        values.append(f"%{title}%")
+        conditions.append("title LIKE ? ESCAPE '\\'")
+        values.append(f"%{escape_like(title)}%")
     if author is not None:
-        conditions.append("author LIKE ?")
-        values.append(f"%{author}%")
+        conditions.append("author LIKE ? ESCAPE '\\'")
+        values.append(f"%{escape_like(author)}%")
     if genre is not None:
         conditions.append("genre = ?")
         values.append(genre)
@@ -339,20 +438,23 @@ def search_books(id=None, title=None, author=None, genre=None):
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY title"
 
-    cursor.execute(query, values)
-    return cursor.fetchall()
+    try:
+        cursor.execute(query, values)
+        return cursor.fetchall()
+    except sqlite3.Error:
+        return Status.DATABASE_ERROR
 
 
 # LOANS TABLE FUNCTIONS
 
 
 def loan_book(user_id, book_id, loan_duration=14):
-    # Check if the loan duration is valid
+    # Check if the loan duration is a valid whole number of days (0 to 21)
     try:
-        loan_duration = int(loan_duration)
-    except ValueError:
+        loan_duration = to_whole_number(loan_duration, 0, MAX_LOAN_DURATION)
+    except (ValueError, TypeError, OverflowError):
         return Status.INVALID_LOAN_DURATION
-    if loan_duration < 0 or loan_duration > 21:
+    if loan_duration is None:
         return Status.INVALID_LOAN_DURATION
     
     try:
@@ -412,16 +514,12 @@ def loan_book(user_id, book_id, loan_duration=14):
                 return Status.BOOK_OUT_OF_STOCK
 
             # Decrease the user's available loans by 1
+            # (the user was already checked above, so this cannot fail to find him)
             cursor.execute("""
                 UPDATE users
                 SET available_loans = available_loans - 1
                 WHERE id = ?
-                RETURNING id
             """, (user_id,))
-
-            # If the user doesn't have any available loans
-            if cursor.fetchone() is None:
-                return Status.MAX_LOANS_REACHED
 
             loan_date = date.today()
             due_date = loan_date + timedelta(days=loan_duration)
@@ -440,7 +538,7 @@ def loan_book(user_id, book_id, loan_duration=14):
     return Status.SUCCESS
 
 
-def search_loans(id=None, username=None, title=None, author=None, genre=None, loan_date=None, due_date=None, returned_at=None, active_loans_only=False):
+def search_loans(id=None, username=None, title=None, author=None, genre=None, loan_date=None, due_date=None, returned_at=None, active_loans_only=False, overdue_only=False, user_id=None):
     conditions, values = [], []
 
     query = """
@@ -460,15 +558,19 @@ def search_loans(id=None, username=None, title=None, author=None, genre=None, lo
     if id is not None:
         conditions.append("loans.id = ?")
         values.append(id)
+    if user_id is not None:
+        # Exact match on the user (a username search is only a "contains" search)
+        conditions.append("loans.user_id = ?")
+        values.append(user_id)
     if username is not None:
-        conditions.append("users.username LIKE ?")
-        values.append(f"%{username}%")
+        conditions.append("users.username LIKE ? ESCAPE '\\'")
+        values.append(f"%{escape_like(username)}%")
     if title is not None:
-        conditions.append("books.title LIKE ?")
-        values.append(f"%{title}%")
+        conditions.append("books.title LIKE ? ESCAPE '\\'")
+        values.append(f"%{escape_like(title)}%")
     if author is not None:
-        conditions.append("books.author LIKE ?")
-        values.append(f"%{author}%")
+        conditions.append("books.author LIKE ? ESCAPE '\\'")
+        values.append(f"%{escape_like(author)}%")
     if genre is not None:
         conditions.append("books.genre = ?")
         values.append(genre)
@@ -479,7 +581,12 @@ def search_loans(id=None, username=None, title=None, author=None, genre=None, lo
         conditions.append("loans.due_date = ?")
         values.append(due_date)
 
-    if active_loans_only:
+    if overdue_only:
+        # Overdue = not returned yet AND the due date is before today
+        conditions.append("loans.returned_at IS NULL")
+        conditions.append("loans.due_date < ?")
+        values.append(date.today().isoformat())
+    elif active_loans_only:
         conditions.append("loans.returned_at IS NULL")
     elif returned_at is not None :
         conditions.append("loans.returned_at = ?")
@@ -487,10 +594,13 @@ def search_loans(id=None, username=None, title=None, author=None, genre=None, lo
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " ORDER BY loan_date DESC"
+    query += " ORDER BY loan_date DESC, loans.id DESC"
 
-    cursor.execute(query, values)
-    return cursor.fetchall()
+    try:
+        cursor.execute(query, values)
+        return cursor.fetchall()
+    except sqlite3.Error:
+        return Status.DATABASE_ERROR
 
 
 def return_book(id):
@@ -517,7 +627,6 @@ def return_book(id):
                 UPDATE users
                 SET available_loans = MIN(3, available_loans + 1)
                 WHERE id = ?
-                RETURNING available_loans
             """, (loan["user_id"],))
 
             # Increase the book's quantity by 1
@@ -561,7 +670,6 @@ def return_all_books(user_id):
                     UPDATE users
                     SET available_loans = MIN(3, available_loans + 1)
                     WHERE id = ?
-                    RETURNING available_loans
                 """, (loan["user_id"],))
 
                 # Increase the book's quantity by 1
