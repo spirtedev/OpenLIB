@@ -2,8 +2,37 @@ import hashlib
 import hmac
 import os
 from status_codes import Status
+# VALIDATION
+def validate_password_strength(password: str) -> Status:
+    """
+    Validates password strength constraints:
+    - At least 8 characters
+    - At least 1 uppercase letter
+    - At least 1 lowercase letter
+    - At least 1 digit
+    Returns Status.SUCCESS if valid, else Status.INVALID_PASSWORD.
+    """
+    if len(password) < 8:
+        return Status.INVALID_PASSWORD
+    if not any(char.isupper() for char in password):
+        return Status.INVALID_PASSWORD
+    if not any(char.islower() for char in password):
+        return Status.INVALID_PASSWORD
+    if not any(char.isdigit() for char in password):
+        return Status.INVALID_PASSWORD
+    return Status.SUCCESS
 
 
+def get_status_message(status: Status) -> str:
+    """Translates Status enums into user-friendly UI error messages."""
+    messages = {
+        Status.INVALID_PASSWORD: "Password must be at least 8 characters with upper, lower, and numbers.",
+        Status.USERNAME_ALREADY_EXISTS: "This username is already taken.",
+        Status.INVALID_USERNAME: "Username must be between 3 and 50 characters.",
+        Status.UNAUTHORIZED: "Invalid username or password.",
+        Status.DATABASE_ERROR: "Database error. Please try again later.",
+    }
+    return messages.get(status, "An unexpected error occurred.")
 # SECURITY
 
 
