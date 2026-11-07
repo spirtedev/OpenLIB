@@ -4,6 +4,7 @@ from tkinter import messagebox
 import database
 from helpers import create_secure_password
 from status_codes import Status
+from gui import no_users_yet
 
 # Colors & Fonts
 BG_COLOR = "#0F172A"      
@@ -63,19 +64,25 @@ class LoginPage(tk.Frame):
         link.pack(pady=(6, 0))
         link.bind("<Button-1>", lambda e: controller.show_frame("RegisterPage"))
 
+        # Enter key submits the form
+        self.user_ent.bind("<Return>", lambda e: self.login())
+        self.pass_ent.bind("<Return>", lambda e: self.login())
+
     def login(self):
-        u, p = self.user_ent.get().strip(), self.pass_ent.get().strip()
+        # The password is NOT stripped: spaces may be part of it (only the username is trimmed).
+        u, p = self.user_ent.get().strip(), self.pass_ent.get()
         if not u or not p:
             self.err_lbl.config(text="Please fill in both fields.")
             return
 
         result = database.login_user(u, p)
-        if result == Status.UNAUTHORIZED:
+        if isinstance(result, Status):          # UNAUTHORIZED: wrong username or password
             self.err_lbl.config(text="Invalid username or password.")
             return
 
+        # FIX: open the dashboard (before, only a message box was shown and nothing happened)
         self.controller.current_user = dict(result)
-        messagebox.showinfo("Success", f"Welcome back, {u}!")
+        self.controller.open_dashboard()
 
     def on_show(self):
         self.user_ent.delete(0, tk.END)
@@ -124,8 +131,8 @@ class RegisterPage(tk.Frame):
 
     def register(self):
         u = self.user_ent.get().strip()
-        p = self.pass_ent.get().strip()
-        c = self.conf_ent.get().strip()
+        p = self.pass_ent.get()
+        c = self.conf_ent.get()
 
         if not u or not p or not c:
             self.err_lbl.config(text="All fields are required.")
@@ -144,10 +151,17 @@ class RegisterPage(tk.Frame):
 
         # Hash and insert into database
         hashed = create_secure_password(p)
-        status = database.new_user(username=u, password_hash=hashed, role="Member")
+        # FIX: the very first account becomes the Administrator. Before, every account was a
+        # "Member", so nobody could ever add books, manage users or record loans.
+        first_account = no_users_yet()
+        role = "Admin" if first_account else "Member"
+        status = database.new_user(username=u, password_hash=hashed, role=role)
 
         if status == Status.SUCCESS:
-            messagebox.showinfo("Success", "Account created! You can now sign in.")
+            if first_account:
+                messagebox.showinfo("Success", "Administrator account created! You can now sign in.")
+            else:
+                messagebox.showinfo("Success", "Account created! You can now sign in.")
             self.controller.show_frame("LoginPage")
         elif status == Status.USERNAME_ALREADY_EXISTS:
             self.err_lbl.config(text="This username is already taken.")
