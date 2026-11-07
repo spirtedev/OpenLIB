@@ -1,11 +1,8 @@
 import os
 import sys
 
-# database.py opens "openlib.db" relative to the current folder: always work from the
-# project folder, wherever the program is started from (double-click, IDE, terminal...).
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-# database.py uses sqlite3.connect(..., autocommit=...) which exists since Python 3.12.
 if sys.version_info < (3, 12):
     sys.exit(f"OpenLIB needs Python 3.12 or newer (you are using "
              f"{sys.version_info.major}.{sys.version_info.minor}).")
